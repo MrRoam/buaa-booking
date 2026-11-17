@@ -101,3 +101,14 @@ def test_official_payment_enum_is_not_a_boolean(order, order_status, pay_status,
     candidate, detail = order
     detail.order_status, detail.pay_status = order_status, pay_status
     assert verify_detail(detail, candidate)["status"] == expected
+
+
+def test_get_timeout_can_be_tighter_without_changing_post_timeout():
+    response = Mock(status_code=200)
+    session = Mock()
+    session.request.return_value = response
+    client = BaseHttpClient(session=session, get_timeout_sec=3.5)
+    client._request_with_retry("GET", "https://example.test/info", log_prefix="test")
+    assert session.request.call_args.kwargs["timeout"] == 3.5
+    client._request_with_retry("POST", "https://example.test/order", log_prefix="test")
+    assert session.request.call_args.kwargs["timeout"] == 10.0

@@ -16,6 +16,7 @@ class BaseHttpClient:
     session: Optional[requests.Session] = None
     retry_count: int = 3
     retry_interval_sec: float = 2.0
+    get_timeout_sec: Optional[float] = None
 
     @property
     def _session(self) -> requests.Session:
@@ -39,8 +40,10 @@ class BaseHttpClient:
         **kwargs: Any,
     ) -> requests.Response:
         # A lost POST response does not mean the server rejected the order.
-        attempts = max(self.retry_count, 1) if method.upper() in {"GET", "HEAD", "OPTIONS"} else 1
-        kwargs.setdefault("timeout", 10.0)
+        is_read = method.upper() in {"GET", "HEAD", "OPTIONS"}
+        attempts = max(self.retry_count, 1) if is_read else 1
+        default_timeout = self.get_timeout_sec if is_read and self.get_timeout_sec is not None else 10.0
+        kwargs.setdefault("timeout", default_timeout)
         parts = urlsplit(url)
         safe_url = f"{parts.scheme}://{parts.netloc}{parts.path}"
         last_exc: Exception | None = None

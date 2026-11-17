@@ -27,6 +27,10 @@ class RetryableQueryError(RuntimeError):
     """A read-only request can be retried within the booking window."""
 
 
+class TransientQueryError(RetryableQueryError):
+    """A transient network or 5xx error during read-only query; can retry quickly."""
+
+
 class ReleaseNotOpenError(RetryableQueryError):
     """The server still considers the requested booking day outside its open range."""
 
@@ -132,7 +136,8 @@ class LiveAdapter:
         self.user = UserSettings(phone=self.secrets.get("phone", ""),
                                  buddy_ids=self.secrets.get("buddy_ids", ""), reservation_type="-1")
         self.client = ApiClient(api_settings=self.api_settings, auth_settings=self.auth,
-                                sign_builder=SignBuilder(prefix=self.api_settings.prefix), retry_count=2)
+                                sign_builder=SignBuilder(prefix=self.api_settings.prefix),
+                                retry_count=2, retry_interval_sec=0.15, get_timeout_sec=3.5)
         self.api = ReservationApi(self.client, self.api_settings, self.user)
         self.service = ReservationService(self.api, self.api_settings, self.user,
                                           AesCbcEncryptor(key=self.api_settings.aes_cbc_key.encode(),
@@ -142,17 +147,24 @@ class LiveAdapter:
         self.fallback_adapter = None
         self.active_submission_adapter = None
 
+    def _ensure_fallback_adapter(self):
+        if self.fallback_adapter is None and self.config.fallback_venue_site_id:
+            other = LiveAdapter(replace(self.config, venue_site_id=self.config.fallback_venue_site_id,
+                                        fallback_venue_site_id=None), self.vault)
+            # Reuse warmed TCP/TLS session and calibrated school clock.
+            other.client.session = self.client._session
+            other.client.timestamp_provider = self.client.timestamp_provider
+            other.workflow = self.workflow
+            self.fallback_adapter = other
+        return self.fallback_adapter
+
     def query_available(self, target, attempted):
         from buaa_booking.selection import select_candidates
         info = self.query(target)
         candidates = [c for c in select_candidates(info, target, self.config) if c.key not in attempted]
         if candidates or not self.config.fallback_venue_site_id:
             return info, candidates
-        if self.fallback_adapter is None:
-            self.fallback_adapter = LiveAdapter(replace(self.config, venue_site_id=self.config.fallback_venue_site_id,
-                                                       fallback_venue_site_id=None), self.vault)
-            self.fallback_adapter.client.timestamp_provider = self.client.timestamp_provider
-        other = self.fallback_adapter
+        other = self._ensure_fallback_adapter()
         info = other.query(target)
         return info, [c for c in select_candidates(info, target, other.config) if c.key not in attempted]
 
@@ -173,11 +185,13 @@ class LiveAdapter:
         try:
             raw = self.api.get_info(target, has_reserve_info=include_order_params)
         except (requests.Timeout, requests.ConnectionError) as exc:
-            raise RetryableQueryError("查询连接暂时不可用") from exc
+            raise TransientQueryError("查询连接暂时不可用") from exc
         except requests.HTTPError as exc:
             status = exc.response.status_code if exc.response is not None else 0
-            if status == 429 or status >= 500:
+            if status == 429:
                 raise RetryableQueryError("查询服务暂时繁忙") from exc
+            if status >= 500:
+                raise TransientQueryError("查询服务暂时繁忙") from exc
             raise
         ok, message, info = parse_info_response(raw)
         if not ok and re.search(r"Token.*失效|token.*失效|未登录|登录.*过期", message):
@@ -214,17 +228,17 @@ class LiveAdapter:
         return info
 
     def warm(self):
-        if self.workflow is not None:
-            return
-        # Read-only checks do not need to load the OCR models.
-        from src.api.captcha_api import CaptchaApi
-        from src.core.captcha_service import CaptchaService
-        from src.core.workflow import ReservationWorkflow
-        self.workflow = ReservationWorkflow(CaptchaService(CaptchaApi(self.client)), self.service,
-                                            self.api_settings.captcha_delay_min, self.api_settings.captcha_delay_max,
-                                            self.api_settings, self.user)
-        # Shared across priming, preparation retries and authorized venue fallback.
-        self.workflow.captcha_service.fetch_budget = 3
+        if self.workflow is None:
+            # Read-only checks do not need to load the OCR models.
+            from src.api.captcha_api import CaptchaApi
+            from src.core.captcha_service import CaptchaService
+            from src.core.workflow import ReservationWorkflow
+            self.workflow = ReservationWorkflow(CaptchaService(CaptchaApi(self.client)), self.service,
+                                                self.api_settings.captcha_delay_min, self.api_settings.captcha_delay_max,
+                                                self.api_settings, self.user)
+            # Shared across priming, preparation retries and authorized venue fallback.
+            self.workflow.captcha_service.fetch_budget = 3
+        self._ensure_fallback_adapter()
 
     def prepare(self, candidate: Candidate, info):
         if candidate.venue_site_id != self.config.venue_site_id:

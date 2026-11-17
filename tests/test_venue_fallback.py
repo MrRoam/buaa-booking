@@ -33,3 +33,20 @@ def test_fallback_uses_only_authorized_other_venue_when_primary_exhausted(config
     assert adapter.primed_captcha is None
     assert adapter.submit(prepared).trade_no == 'TEST'
     other.submit.assert_called_once_with(prepared)
+
+
+def test_ensure_fallback_adapter_reuses_warm_session_and_clock(config, tmp_path):
+    from buaa_booking.vault import Vault
+    vault = Vault(tmp_path)
+    vault.write({"username": "u", "password": "p"})
+    adapter = LiveAdapter(replace(config, fallback_venue_site_id=39), vault)
+    adapter.client.timestamp_provider = lambda: 999
+    adapter.workflow = object()
+    other = adapter._ensure_fallback_adapter()
+    assert other is not None
+    assert other.config.venue_site_id == 39
+    assert other.client.session is adapter.client._session
+    assert other.client.timestamp_provider is adapter.client.timestamp_provider
+    assert other.workflow is adapter.workflow
+    assert other.client.retry_interval_sec == 0.15
+    assert other.client.get_timeout_sec == 3.5

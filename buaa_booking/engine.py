@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 
 from buaa_booking.config import CHINA, Config
-from buaa_booking.adapter import ReleaseNotOpenError, RetryableQueryError, safe_server_message
+from buaa_booking.adapter import ReleaseNotOpenError, RetryableQueryError, TransientQueryError, safe_server_message
 from src.core.exceptions import CaptchaError, CaptchaLimitError
 from buaa_booking.journal import Journal, RETRYABLE_REFUSALS
 from buaa_booking.selection import Candidate, Choice, select_candidates
@@ -112,7 +112,7 @@ class Engine:
             self.clock.wait_until(release)
         end_tick = self.clock.monotonic() + max(0, (deadline - self.clock.now()).total_seconds())
         attempted = set()
-        release_boundary_retry_used = False
+        release_boundary_retries = 0
         preparations = existing.get("attempts", 0) if existing else 0
         last_failure = ""
         if existing and existing.get("candidate"):
@@ -129,10 +129,13 @@ class Engine:
                 if not execute:
                     raise
                 self.trace(key, "query_retry", error_type=type(exc).__name__)
-                delay = 2.0
                 if isinstance(exc, ReleaseNotOpenError):
-                    delay = max(.5, self.config.poll_seconds) if release_boundary_retry_used else .1
-                    release_boundary_retry_used = True
+                    delay = .1 if release_boundary_retries < 5 else max(.5, self.config.poll_seconds)
+                    release_boundary_retries += 1
+                elif isinstance(exc, TransientQueryError):
+                    delay = .2
+                else:
+                    delay = 2.0
                 self.clock.sleep(min(delay, max(0, (deadline - self.clock.now()).total_seconds())))
                 continue
             except Exception as exc:
@@ -145,7 +148,8 @@ class Engine:
             if not candidates:
                 if not execute:
                     return {"status": "no_availability", "message": "当前没有符合配置的空场，未提交订单"}
-                self.clock.sleep(min(self.config.poll_seconds, max(0, (deadline - self.clock.now()).total_seconds())))
+                poll_delay = min(.5, self.config.poll_seconds) if scheduled and self.clock.now() < release + timedelta(seconds=5) else self.config.poll_seconds
+                self.clock.sleep(min(poll_delay, max(0, (deadline - self.clock.now()).total_seconds())))
                 continue
             candidate = candidates[0]
             if not execute:
@@ -200,9 +204,11 @@ class Engine:
                 return result
             if outcome.status == "conflict":
                 attempted.add(candidate.key)
-            delay = .1 if outcome.status == "release_not_open" and not release_boundary_retry_used else 2.0
             if outcome.status == "release_not_open":
-                release_boundary_retry_used = True
+                delay = .1 if release_boundary_retries < 5 else 2.0
+                release_boundary_retries += 1
+            else:
+                delay = 2.0
             self.clock.sleep(min(delay, max(0, (deadline - self.clock.now()).total_seconds())))
         result = self.journal.save(key, "finished", message="窗口结束或已达准备/提交次数上限，未确认成功订单"
                                    + ("；最后原因：" + last_failure if last_failure else ""))

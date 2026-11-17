@@ -374,3 +374,23 @@ def test_captcha_server_limit_ends_run_without_outer_retry(runtime, target, monk
     assert len(calls) == 1
     assert adapter.submissions == 0
     assert journal.latest()['attempts'] == 0
+
+
+def test_multiple_release_boundary_and_transient_query_retries_stay_fast(runtime, target, monkeypatch):
+    from buaa_booking.adapter import ReleaseNotOpenError, TransientQueryError
+    engine, adapter, _, _, clock = runtime
+    original = adapter.query
+    calls = []
+    def query(value):
+        calls.append(clock.monotonic())
+        if len(calls) <= 3:
+            raise ReleaseNotOpenError('学校尚未放场')
+        if len(calls) == 4:
+            raise TransientQueryError('连接抖动')
+        return original(value)
+    monkeypatch.setattr(adapter, 'query', query)
+    assert engine.run(target, execute=True, scheduled=True)['status'] == 'pending_payment'
+    assert calls[1] - calls[0] == pytest.approx(.1)
+    assert calls[2] - calls[1] == pytest.approx(.1)
+    assert calls[3] - calls[2] == pytest.approx(.1)
+    assert calls[4] - calls[3] == pytest.approx(.2)
