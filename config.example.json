@@ -1,0 +1,15 @@
+{
+  "enabled": false,
+  "venue_site_id": 38,
+  "dates": [],
+  "weekdays": [],
+  "release_lead_days": 2,
+  "release_time": "07:00:00",
+  "window_seconds": 60,
+  "poll_seconds": 1.0,
+  "max_submissions": 3,
+  "max_total_price": "100.00",
+  "same_court": true,
+  "preferences": [],
+  "notifications": {"desktop": true, "bark": true, "email": true}
+}

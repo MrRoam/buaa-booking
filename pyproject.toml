@@ -1,0 +1,41 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "buaa-booking-assistant"
+version = "0.1.0"
+description = "北航学院路羽毛球预约：定时执行、订单确认与人工付款"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "customtkinter==6.0.0",
+    "requests>=2.28.0",
+    "pycryptodome>=3.15.0",
+    "tabulate>=0.9.0",
+]
+
+[project.optional-dependencies]
+ocr = [
+    "ddddocr==1.6.1",
+    "opencv-python>=4.8,<6",
+    "Pillow>=10,<13",
+]
+test = ["pytest>=8,<10"]
+
+[project.scripts]
+buaa-booking = "buaa_booking.__main__:entrypoint"
+
+[dependency-groups]
+build = [
+    "Nuitka[app]",
+    "zstandard>=0.23.0",
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["src*", "buaa_booking*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
