@@ -184,6 +184,11 @@ class LiveAdapter:
         from src.parsers.day_info import parse_info_response
         try:
             raw = self.api.get_info(target, has_reserve_info=include_order_params)
+        except json.JSONDecodeError as exc:
+            if not _auth_refreshed:
+                self.authenticate()
+                return self.query(target, _auth_refreshed=True, include_order_params=include_order_params)
+            raise TransientQueryError("查询返回异常响应") from exc
         except (requests.Timeout, requests.ConnectionError) as exc:
             raise TransientQueryError("查询连接暂时不可用") from exc
         except requests.HTTPError as exc:

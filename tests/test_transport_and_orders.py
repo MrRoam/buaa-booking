@@ -112,3 +112,17 @@ def test_get_timeout_can_be_tighter_without_changing_post_timeout():
     assert session.request.call_args.kwargs["timeout"] == 3.5
     client._request_with_retry("POST", "https://example.test/order", log_prefix="test")
     assert session.request.call_args.kwargs["timeout"] == 10.0
+
+
+def test_empty_json_query_response_refreshes_auth_then_raises_transient(config):
+    import json
+    from buaa_booking.adapter import LiveAdapter, TransientQueryError
+    adapter = object.__new__(LiveAdapter)
+    adapter.config = config
+    adapter.authenticate = Mock()
+    adapter.api = Mock()
+    adapter.api.get_info.side_effect = json.JSONDecodeError("Expecting value", "", 0)
+    with pytest.raises(TransientQueryError):
+        adapter.query("2026-11-19")
+    adapter.authenticate.assert_called_once()
+    assert adapter.api.get_info.call_count == 2
